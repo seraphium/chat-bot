@@ -1,0 +1,6 @@
+[submodule "bolt-chatbot-ui"]
+	path = bolt-chatbot-ui
+	url = https://github.com/seraphium/bolt-chatbot-ui.git
+[submodule "langchain_backend"]
+	path = langchain_backend
+	url = https://github.com/seraphium/langchain_backend.git
