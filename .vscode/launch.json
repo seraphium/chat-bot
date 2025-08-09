@@ -10,6 +10,20 @@
             "name": "Launch Chrome against localhost",
             "url": "http://localhost:3000",
             "webRoot": "${workspaceFolder}"
-        }
+        },
+        {
+            "name": "Poetry: Debug Module",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/langchain_backend/main.py",
+            "console": "integratedTerminal",
+            "cwd": "${workspaceFolder}",
+            "justMyCode": true,
+            "env": {
+                "POETRY_ACTIVE": "1",
+                "PYTHONUNBUFFERED": "1" // Good for seeing output immediately
+
+            },
+        }   
     ]
 }
