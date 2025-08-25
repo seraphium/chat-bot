@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+ENV/
+env.bak/
+venv.bak/
+pdf/
+*.pdf
+
+# Poetry
+poetry.lock
+poetry-installer*
+
+# Environments
+.env
+
+# IDEs
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# ChromaDB
+chroma_db/
+
+#uploaded user pictures
+images/
+image/
+storage/*
+
+# DB
+sqlite*
+
+*.log
+
+# Frontend SDK
+api-spec/*
+frontend-sdk/*
+db/*
