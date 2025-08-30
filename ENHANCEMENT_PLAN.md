@@ -1,454 +1,98 @@
-# Enhancement Plan - AI Chatbot Codebase
+# Enhancement Plan — Chat-Bot Repository
 
-Based on analysis of the current codebase structure, this document outlines prioritized enhancements and missing pieces.
+This plan prioritizes missing modern chatbot capabilities and outlines phased, actionable improvements across backend (FastAPI/LangChain) and frontend (Next.js). The goal is safer reasoning, better reliability, richer retrieval, and improved UX without breaking current APIs.
 
-## Current State Analysis
+## Summary of Gaps
+- Realtime UX: SSE-only; no WebSocket channel for typing/presence or multi-client sync.
+- Conversation storage: Messages stored as JSON on conversation; no message-level rows, edits, reactions, or analytics.
+- Safety: No input/output moderation, PII redaction, or rate limiting on chat endpoints.
+- Observability: No Prometheus metrics or tracing; limited error visibility.
+- Tool calling: No structured tool/function use for search/calculator/file ops.
+- RAG: Basic splitting; limited file loaders; no citations/re-ranking.
+- Multimodal: Image path tied to Ollama; no OpenAI Vision; no audio/voice.
+- Frontend: Missing citations UI, message edit/regenerate, export/share, per-conversation settings.
 
-### ✅ Existing Strengths
-- **Solid Foundation**: Well-structured FastAPI backend with proper service layer separation
-- **Redis Integration**: Basic cache service implemented with JSON/pickle serialization
-- **Monitoring**: Health checks and basic system monitoring tasks
-- **Caching**: Chain response caching with intelligent key generation
-- **Background Processing**: Celery tasks for file processing and monitoring
-- **API Structure**: Clean REST API with proper error handling
+## Phase P0 — Core Reliability and Safety
 
-### 🔍 Identified Gaps & Opportunities
+1) Safe Reasoning Mode (Chain-of-Thought) — First Feature
+- Approach: Enable internal reasoning traces while not exposing full chain-of-thought to users.
+- API: Extend chat request with `reasoning_mode: "off" | "hidden" | "concise"` and optional `reasoning_effort: "low" | "medium" | "high"`.
+- Backend: For OpenAI reasoning-capable models, pass reasoning config; for others, instruct “think step-by-step internally, output final answer only.” Never persist or stream raw CoT. If `concise`, stream a short, redacted rationale (SSE event type `rationale`) capped by length and filtered for PII.
+- UI: Toggle “Reason better” and optional “Show brief rationale (beta)”; defaults to off. Display brief rationale in a collapsible panel; never show raw thoughts.
+- Metrics: Track reasoning usage, token deltas, and error rate.
 
-## Priority 1: Chain of Thought (CoT) & Advanced Model Support
+2) Message Model + Migrations
+- Add `messages` table (id, conversation_id, role, content, metadata JSON, tokens, cost, created_at). Update ChatService to write per message and deprecate the JSON blob field progressively.
 
-### 1.1 Chain of Thought Implementation
-**Current State**: Basic chat responses without reasoning steps
-**Enhancement**: Integrate CoT prompting with latest GPT-OSS models
+3) Rate Limiting and Moderation
+- Apply Redis-backed rate limits (e.g., fastapi-limiter) on `/auth/*` and `/chat/*` with `429` + `Retry-After`.
+- Add optional moderation: lightweight input filter (PII/keys) and provider moderation for outputs. Redact or block with actionable errors. Feature-flagged.
 
-```python
-# app/chains/cot_chain.py
-class ChainOfThoughtChain:
-    """Chain that demonstrates reasoning process using CoT prompting"""
-    
-    def __init__(self, model_provider: str = "openai", model_name: str = "gpt-4"):
-        self.model = ModelFactory().create_model(model_provider, model_name)
-        self.cot_prompt = ChatPromptTemplate.from_messages([
-            ("system", """You are a helpful AI assistant. Think step by step to provide accurate responses.
-            
-            Reasoning Format:
-            Thought: [Your step-by-step reasoning process]
-            Action: [The action to take based on your reasoning]
-            Final Answer: [The final comprehensive answer]
-            """),
-            ("human", "{question}")
-        ])
-    
-    async def generate_with_cot(self, question: str) -> Dict[str, Any]:
-        """Generate response with Chain of Thought reasoning"""
-        chain = self.cot_prompt | self.model | StrOutputParser()
-        
-        response = await chain.ainvoke({"question": question})
-        
-        # Parse CoT response
-        parsed_response = self._parse_cot_response(response)
-        
-        return {
-            "final_answer": parsed_response["final_answer"],
-            "reasoning_steps": parsed_response["reasoning_steps"],
-            "raw_response": response
-        }
-    
-    def _parse_cot_response(self, response: str) -> Dict[str, Any]:
-        """Parse CoT formatted response into structured data"""
-        # Implementation to extract Thought, Action, Final Answer sections
-        return parse_cot_format(response)
-```
+4) Observability
+- Expose `/metrics` (Prometheus) with request/stream counters and latency histograms. Add structured logging and basic tracing (OTel) for FastAPI + httpx.
 
-### 1.2 GPT-OSS Model Integration
-**Enhancement**: Support for latest open-source models with CoT capability
+5) Realtime Channel
+- Add `/ws` for typing indicators, presence, and live status; keep content over SSE for stability. Heartbeats + auto-reconnect.
 
-```python
-# app/models/llm/providers.py
-class OpenSourceModelProvider:
-    """Support for GPT-OSS models like Llama 3, Mistral, Claude, etc."""
-    
-    SUPPORTED_MODELS = {
-        "llama3-70b": {
-            "endpoint": "https://api.example.com/llama3-70b",
-            "supports_cot": True,
-            "context_window": 8192
-        },
-        "mistral-large": {
-            "endpoint": "https://api.mistral.ai/v1/chat/completions",
-            "supports_cot": True,
-            "context_window": 32768
-        },
-        "claude-3": {
-            "endpoint": "https://api.anthropic.com/v1/messages",
-            "supports_cot": True,
-            "context_window": 200000
-        },
-        "deepseek-coder": {
-            "endpoint": "https://api.deepseek.com/v1/chat/completions",
-            "supports_cot": True,
-            "context_window": 128000
-        }
-    }
-    
-    async def generate_with_cot(self, model_name: str, messages: List[Dict], **kwargs):
-        """Generate response with CoT for supported models"""
-        model_config = self.SUPPORTED_MODELS.get(model_name)
-        if not model_config or not model_config["supports_cot"]:
-            raise ValueError(f"Model {model_name} does not support Chain of Thought")
-        
-        # Add CoT prompting to messages
-        cot_messages = self._add_cot_prompting(messages)
-        
-        response = await self._call_model_api(model_config["endpoint"], cot_messages, **kwargs)
-        
-        return self._parse_cot_response(response)
-```
+Acceptance (P0)
+- Reasoning: Final answers never include raw CoT; optional concise rationale gated and length-limited.
+- DB: Messages persisted per-row; reads still work for existing JSON until removed.
+- Limits: `/chat/*` enforces rate limits with tests and backoff guidance.
+- Metrics: `/metrics` shows p95 latency, error rate, stream counts.
+- Realtime: Typing/presence visible across clients via WebSocket.
 
-### 1.3 CoT Visualization Frontend
-**Enhancement**: Frontend components to display reasoning process
+## Phase P1 — Intelligence, Retrieval, and UX
 
-```typescript
-// components/CotVisualization.tsx
-interface ReasoningStep {
-  thought: string;
-  action?: string;
-  confidence?: number;
-  timestamp: number;
-}
+1) Tool/Function Calling
+- Implement tool schemas for web_search, file_lookup, and calculator. Support OpenAI tool-calling; provide a LangGraph path for local/Ollama. Route based on provider.
 
-const CotVisualization: React.FC<{ reasoningSteps: ReasoningStep[] }> = ({ reasoningSteps }) => {
-  return (
-    <div className="cot-container">
-      <h4>Reasoning Process:</h4>
-      <div className="reasoning-steps">
-        {reasoningSteps.map((step, index) => (
-          <div key={index} className="reasoning-step">
-            <div className="step-header">
-              <span className="step-number">Step {index + 1}</span>
-              {step.confidence && (
-                <span className="confidence">Confidence: {step.confidence}%</span>
-              )}
-            </div>
-            <div className="thought">{step.thought}</div>
-            {step.action && <div className="action">Action: {step.action}</div>}
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-};
-```
+2) RAG Upgrades
+- Switch to `RecursiveCharacterTextSplitter`; use `unstructured` loaders (DOCX/PPTX/HTML/TXT). Embed metadata (source, page, chunk_id). Stream citations as side-band events; optional re-ranking.
 
-## Priority 2: Redis Enhancements (Immediate Impact)
+3) Frontend Enhancements
+- Citations panel with source drill-down; message edit + regenerate; conversation export (Markdown/JSON); per-conversation settings (model/provider, context K, web-search toggle).
 
-### 2.1 Rate Limiting Implementation
-**Current State**: Settings configured but no implementation
-**Enhancement**: Implement Redis-based rate limiting middleware
+4) Vision Support
+- Add OpenAI Vision path; detect images in conversation and route accordingly.
 
-```python
-# app/api/middleware/rate_limiting.py
-from fastapi import Request, HTTPException
-from app.services.cache_service import get_cache_service
-from app.config.settings import get_settings
+Acceptance (P1)
+- Tool calling executes web search or file lookup and streams citations to UI.
+- DOCX/PPTX/TXT/HTML processed; citations show chunk-level source.
+- Users can edit/regenerate messages and export conversations.
 
-async def rate_limit_middleware(request: Request):
-    if not settings.rate_limit_enabled:
-        return
-    
-    client_ip = request.client.host
-    user_id = get_current_user_id(request)  # From JWT
-    key = f"rate_limit:{user_id or client_ip}"
-    
-    cache = get_cache_service()
-    current = await cache.get_json(key) or {"count": 0, "reset_time": time.time() + settings.rate_limit_window}
-    
-    if current["count"] >= settings.rate_limit_requests:
-        raise HTTPException(429, "Rate limit exceeded")
-    
-    await cache.set_json(key, {"count": current["count"] + 1}, ttl=settings.rate_limit_window)
-```
+## Phase P2 — Advanced/Multi-tenant
 
-### 2.2 Session Management & Concurrency Control
-**Current State**: No session limiting
-**Enhancement**: Redis-based session tracking and concurrency limits
+1) Per-User Provider Keys
+- Secure storage, policy controls (allowed models, rate-limits), and UI for key entry.
 
-```python
-# app/services/session_service.py
-class SessionService:
-    async def track_user_session(self, user_id: str, session_id: str):
-        key = f"user_sessions:{user_id}"
-        await self.cache_service.set_json(key, session_id, ttl=3600)
-    
-    async def get_active_sessions(self, user_id: str) -> int:
-        pattern = f"user_sessions:{user_id}:*"
-        return len(await self.cache_service.get_keys(pattern))
-    
-    async def enforce_concurrency_limit(self, user_id: str, max_sessions: int = 5):
-        active_sessions = await self.get_active_sessions(user_id)
-        if active_sessions >= max_sessions:
-            raise ConcurrencyLimitError("Maximum concurrent sessions exceeded")
-```
+2) Content Scanning
+- Antivirus (ClamAV) + strict MIME validation for uploads; quarantine on fail.
 
-### 2.3 Real-time Analytics & Metrics
-**Current State**: Basic monitoring tasks
-**Enhancement**: Redis-based real-time analytics dashboard
+3) Retrieval Quality
+- Hybrid search (BM25 + vector), re-ranker toggle, dedupe/score normalization.
 
-```python
-# app/services/analytics_service.py
-class AnalyticsService:
-    async def track_message(self, user_id: str, message_type: str, model: str):
-        # Real-time counters
-        await self.cache_service.increment(f"stats:messages:{message_type}")
-        await self.cache_service.increment(f"stats:user:{user_id}:messages")
-        await self.cache_service.increment(f"stats:model:{model}:usage")
-        
-        # Time-series data
-        timestamp = int(time.time())
-        await self.cache_service.zadd(f"timeline:messages", {timestamp: 1})
-```
+4) Voice
+- Optional ASR/TTS (Whisper + ElevenLabs or alternatives) with streaming where possible.
 
-## Priority 3: Advanced Caching Strategies
+Acceptance (P2)
+- User-scoped keys with policy enforcement and audit logging.
+- Blocked malicious files produce clear, user-facing errors.
 
-### 3.1 Cache Warmup & Preloading
-**Enhancement**: Pre-load frequently accessed data
+## API and Schema Deltas (Focused)
+- `POST /api/v1/chat/conversations/{id}/messages` request: add `reasoning_mode`, `reasoning_effort` (optional). Default `off`.
+- SSE: optional `rationale` event when `reasoning_mode="concise"`; `content` and `complete` semantics unchanged.
+- DB: Alembic migration adds `messages` table; conversations JSON field marked deprecated.
 
-```python
-# app/tasks/background/cache_warmup_tasks.py
-@celery_app.task
-def warmup_popular_queries():
-    """Pre-cache popular search queries and responses"""
-    popular_queries = get_popular_queries_from_db()
-    for query in popular_queries:
-        # Pre-generate and cache responses
-        response = await chat_service.get_response(query)
-        await cache_manager.store_response(
-            chain_type="chat", 
-            input_data=query, 
-            response=response
-        )
-```
+## Initial Workstream (Recommended PR Order)
+1) P0 “Reasoning + Limits + Metrics + Messages”
+   - Alembic migration + repository for messages.
+   - ChatService updated to persist messages and support `reasoning_mode` without exposing raw CoT.
+   - Rate-limiter middleware integration and tests.
+   - `/metrics` with counters/histograms; structured logging.
+2) WebSocket presence/typing channel + UI toggles (reasoning + brief rationale).
+3) P1 tool calling and RAG upgrades; citations UI.
 
-### 3.2 Intelligent Cache Invalidation
-**Enhancement**: Pattern-based cache invalidation
+Notes
+- Reasoning safety: Never log or return full chain-of-thought. Store only minimal metadata (e.g., token counts, effort) and optionally a short redacted rationale when explicitly enabled.
+- Backwards compatibility: Maintain existing SSE shape; add events only when features enabled.
 
-```python
-# Enhanced CacheService
-async def invalidate_pattern(self, pattern: str, namespace: str = None) -> int:
-    """Invalidate keys matching pattern using Redis SCAN"""
-    keys = await self.get_keys(pattern, namespace)
-    return await self.delete_pattern(pattern, namespace)
-
-async def invalidate_user_context(self, user_id: str):
-    """Invalidate all cache entries for a user"""
-    patterns = [
-        f"*user:{user_id}*",
-        f"*session:{user_id}*", 
-        f"*conversation:*{user_id}*"
-    ]
-    for pattern in patterns:
-        await self.invalidate_pattern(pattern)
-```
-
-## Priority 4: Monitoring & Observability Enhancements
-
-### 4.1 Real-time Dashboard Integration
-**Enhancement**: Redis Streams for real-time monitoring
-
-```python
-# app/services/monitoring_service.py
-class RealTimeMonitoringService:
-    async def publish_metric(self, metric_name: str, value: float, tags: dict = None):
-        event = {
-            "timestamp": time.time(),
-            "metric": metric_name,
-            "value": value,
-            "tags": tags or {}
-        }
-        await self.redis.xadd("metrics:stream", event)
-    
-    async def get_realtime_metrics(self, time_window: int = 300):
-        """Get metrics from last 5 minutes"""
-        return await self.redis.xrange("metrics:stream", f"-{time_window}", "+")
-```
-
-### 4.2 Advanced Health Checks
-**Enhancement**: Comprehensive system health monitoring
-
-```python
-# Enhanced health routes
-@router.get("/health/advanced")
-async def advanced_health_check():
-    """Comprehensive health check with performance metrics"""
-    return {
-        "cache_hit_rate": await cache_service.get_hit_rate(),
-        "memory_usage": await cache_service.get_memory_usage(),
-        "connected_clients": await cache_service.get_connected_clients(),
-        "task_queue_depth": await celery_service.get_queue_depth(),
-        "database_latency": await database_service.get_latency()
-    }
-```
-
-## Priority 5: Performance Optimization
-
-### 5.1 Connection Pooling & Management
-**Enhancement**: Optimized Redis connection handling
-
-```python
-# Enhanced CacheService initialization
-class CacheService:
-    def __init__(self):
-        self._pool: Optional[redis.ConnectionPool] = None
-        self._redis: Optional[redis.Redis] = None
-    
-    async def _get_pool(self) -> redis.ConnectionPool:
-        if self._pool is None:
-            self._pool = redis.ConnectionPool.from_url(
-                settings.redis_url,
-                max_connections=20,
-                timeout=5,
-                retry_on_timeout=True
-            )
-        return self._pool
-```
-
-### 5.2 Pipeline Optimization
-**Enhancement**: Batch Redis operations for performance
-
-```python
-async def bulk_cache_operations(self, operations: List[Tuple[str, Any, int]]):
-    """Execute multiple cache operations in pipeline"""
-    async with self._redis.pipeline() as pipe:
-        for key, value, ttl in operations:
-            pipe.setex(key, ttl, json.dumps(value))
-        await pipe.execute()
-```
-
-## Priority 6: Security Enhancements
-
-### 6.1 Redis Security Hardening
-**Enhancement**: Improved security configuration
-
-```python
-# app/config/security.py
-class RedisSecurity:
-    @staticmethod
-    def get_secure_redis_config():
-        return {
-            "ssl": settings.redis_use_ssl,
-            "ssl_cert_reqs": "required",
-            "ssl_ca_certs": settings.redis_ca_cert_path,
-            "password": settings.redis_password,
-            "socket_timeout": 5,
-            "socket_connect_timeout": 5,
-            "retry_on_timeout": True,
-            "max_connections": 20
-        }
-```
-
-### 6.2 Audit Logging
-**Enhancement**: Redis-based audit trail
-
-```python
-# app/services/audit_service.py
-class AuditService:
-    async def log_event(self, event_type: str, user_id: str, details: dict):
-        audit_entry = {
-            "timestamp": datetime.utcnow().isoformat(),
-            "event_type": event_type,
-            "user_id": user_id,
-            "details": details,
-            "ip_address": get_client_ip()
-        }
-        
-        # Store in Redis sorted set by timestamp
-        await self.redis.zadd("audit_log", {json.dumps(audit_entry): time.time()})
-        
-        # Keep only last 10,000 events
-        await self.redis.zremrangebyrank("audit_log", 0, -10001)
-```
-
-## Implementation Roadmap
-
-### Phase 1: Immediate (2-3 weeks)
-1. ✅ **Chain of Thought Integration** - CoT prompting with GPT-OSS models
-2. ✅ **Frontend CoT Visualization** - Display reasoning process
-3. ✅ **Rate Limiting Middleware** - Prevent abuse
-4. ✅ **Session Management** - Concurrency control  
-5. ✅ **Enhanced Health Checks** - Better monitoring
-6. ✅ **Connection Pooling** - Performance optimization
-
-### Phase 2: Short-term (4-6 weeks)
-1. **Real-time Analytics** - Usage tracking
-2. **Advanced Cache Strategies** - Warmup & invalidation
-3. **Security Hardening** - SSL, authentication
-4. **Audit Logging** - Compliance requirements
-
-### Phase 3: Medium-term (7-12 weeks)
-1. **Redis Cluster Support** - Horizontal scaling
-2. **Geographic Distribution** - Multi-region caching
-3. **Machine Learning Integration** - Predictive caching
-4. **Advanced Monitoring** - AI-powered anomaly detection
-
-## Technical Requirements
-
-### Dependencies Needed
-```bash
-# Additional Python packages
-poetry add redis-py-cluster python-snappy orjson
-
-# CoT & Model Support
-poetry add anthropic mistralai deepseek-openai llama-index
-
-# Monitoring tools
-poetry add prometheus-client grafana-dashboard
-```
-
-### Configuration Updates
-```python
-# Enhanced settings.py
-class EnhancedSettings(Settings):
-    # Redis enhancements
-    redis_max_connections: int = Field(20, env="REDIS_MAX_CONNECTIONS")
-    redis_timeout: int = Field(5, env="REDIS_TIMEOUT")
-    redis_use_ssl: bool = Field(False, env="REDIS_USE_SSL")
-    rate_limit_requests: int = Field(100, env="RATE_LIMIT_REQUESTS")
-    rate_limit_window: int = Field(60, env="RATE_LIMIT_WINDOW")
-    max_concurrent_sessions: int = Field(5, env="MAX_CONCURRENT_SESSIONS")
-    
-    # CoT & Model enhancements
-    enable_chain_of_thought: bool = Field(True, env="ENABLE_CHAIN_OF_THOUGHT")
-    default_cot_model: str = Field("claude-3", env="DEFAULT_COT_MODEL")
-    anthropic_api_key: Optional[str] = Field(None, env="ANTHROPIC_API_KEY")
-    mistral_api_key: Optional[str] = Field(None, env="MISTRAL_API_KEY")
-    deepseek_api_key: Optional[str] = Field(None, env="DEEPSEEK_API_KEY")
-    cot_max_reasoning_steps: int = Field(10, env="COT_MAX_REASONING_STEPS")
-    cot_temperature: float = Field(0.7, env="COT_TEMPERATURE")
-    show_reasoning_steps: bool = Field(True, env="SHOW_REASONING_STEPS")
-```
-
-## Success Metrics
-
-### Performance Indicators
-- ✅ Cache hit rate > 80%
-- ✅ API response time < 100ms (p95)
-- ✅ Rate limit violations < 0.1% of requests
-- ✅ Redis memory usage < 70% capacity
-- ✅ CoT response accuracy improvement > 15%
-- ✅ Reasoning step clarity score > 4/5
-- ✅ Model response coherence improvement > 20%
-
-### Business Metrics
-- ✅ User satisfaction score improvement
-- ✅ Reduced infrastructure costs
-- ✅ Improved system reliability
-- ✅ Better compliance posture
-
-## Risk Mitigation
-
-1. **Backward Compatibility**: All changes maintain existing API contracts
-2. **Feature Flags**: New functionality behind config flags
-3. **Gradual Rollout**: Canary deployment for critical changes
-4. **Comprehensive Testing**: Unit, integration, and load tests
-5. **Monitoring**: Enhanced observability during rollout
-
-This enhancement plan focuses on leveraging Redis more effectively while addressing current gaps in rate limiting, session management, and real-time analytics.
