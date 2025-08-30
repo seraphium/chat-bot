@@ -92,7 +92,7 @@ New state variables in main page:
 
 1. **No Raw CoT Exposure**: Never stream or persist full chain-of-thought
 2. **PII Redaction**: Automatic removal of phone numbers, emails, SSNs, credit cards
-3. **Length Limits**: Rationales capped at 200 characters
+3. **Length Limits**: Rationales capped at a configurable length
 4. **Feature Gating**: Concise mode only shows sanitized rationales
 
 ## Testing
@@ -132,3 +132,10 @@ The AI will process according to your settings, showing rationales only in conci
 - Reasoning quality metrics
 - User preference persistence
 - Advanced rationale formatting
+
+## Configuration
+
+- `REASONING_RATIONALE_MAX_LEN` (default: `200`): Maximum number of characters
+  from a sanitized rationale to persist in the database (attached to the
+  assistant message `metadata.rationale`). Increase this if you want more
+  rationale visible after page reloads. Set in `langchain_backend/.env`.
