@@ -64,6 +64,9 @@ Added new event type for streaming rationale:
 1. **Reasoning Mode Selector**: Dropdown to select off/hidden/concise
 2. **Effort Level Selector**: Visible when reasoning mode is active
 3. **Rationale Display**: Blue info box showing reasoning (concise mode only)
+4. **Model Badges**: Models can indicate capabilities in the selector:
+   - "Image" badge for vision support
+   - "Reasoning" badge for concise/hidden reasoning support (e.g., GPT-OSS)
 
 ### API Client Updates
 
