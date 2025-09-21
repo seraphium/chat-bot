@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find:*)",
+      "Bash(poetry run python:*)",
+      "Bash(curl:*)",
+      "Bash(pkill:*)",
+      "Bash(python:*)",
+      "Bash(uvicorn:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}
