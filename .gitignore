@@ -13,7 +13,7 @@ pdf/
 *.pdf
 
 # Poetry
-poetry.lock
+# poetry.lock  # Should be committed for reproducible builds
 poetry-installer*
 
 # Environments
